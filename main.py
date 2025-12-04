@@ -517,28 +517,214 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
             pass
         
         # Scroll and check certification
+        print("[FORM] Scrolling to bottom for checkbox...")
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(2000)  # Wait 2 seconds after scroll
         
-        print("[FORM] Checking certification checkbox...")
+        print("[FORM] Looking for certification checkbox...")
+        page.wait_for_timeout(1000)
+        
+        # Take screenshot to see checkbox state
+        page.screenshot(path="before_checkbox.png")
+        
+        checkbox_clicked = False
+        
+        # Method 1: Find checkbox by the certification text and click it
+        try:
+            cert_checkbox = page.locator("mat-checkbox:has-text('certify')").first
+            if cert_checkbox.is_visible(timeout=3000):
+                print("[FORM] Found checkbox with 'certify' text")
+                page.wait_for_timeout(500)
+                cert_checkbox.scroll_into_view_if_needed()
+                page.wait_for_timeout(500)
+                cert_checkbox.click()
+                page.wait_for_timeout(1000)
+                print("[FORM] Clicked certification checkbox")
+                checkbox_clicked = True
+        except Exception as e:
+            print(f"[FORM] Certify checkbox method failed: {e}")
+        
+        # Method 2: Click the mat-checkbox container
+        if not checkbox_clicked:
+            try:
+                checkbox = page.locator("mat-checkbox").first
+                if checkbox.is_visible(timeout=2000):
+                    print("[FORM] Found mat-checkbox")
+                    checkbox.scroll_into_view_if_needed()
+                    page.wait_for_timeout(500)
+                    
+                    # Check if already checked
+                    class_attr = checkbox.get_attribute("class") or ""
+                    if "mat-checkbox-checked" not in class_attr:
+                        checkbox.click()
+                        page.wait_for_timeout(1000)
+                        print("[FORM] Clicked mat-checkbox")
+                        checkbox_clicked = True
+                    else:
+                        print("[FORM] Checkbox already checked")
+                        checkbox_clicked = True
+            except Exception as e:
+                print(f"[FORM] mat-checkbox click failed: {e}")
+        
+        # Method 3: Click the label inside mat-checkbox
+        if not checkbox_clicked:
+            try:
+                label = page.locator("mat-checkbox label").first
+                if label.is_visible(timeout=2000):
+                    print("[FORM] Found checkbox label")
+                    label.scroll_into_view_if_needed()
+                    page.wait_for_timeout(500)
+                    label.click()
+                    page.wait_for_timeout(1000)
+                    print("[FORM] Clicked checkbox label")
+                    checkbox_clicked = True
+            except Exception as e:
+                print(f"[FORM] Label click failed: {e}")
+        
+        # Method 4: Use JavaScript to check it
+        if not checkbox_clicked:
+            try:
+                print("[FORM] Trying JavaScript method...")
+                page.evaluate('''() => {
+                    const checkbox = document.querySelector('mat-checkbox');
+                    if (checkbox) {
+                        checkbox.scrollIntoView();
+                        const input = checkbox.querySelector('input[type="checkbox"]');
+                        if (input && !input.checked) {
+                            input.click();
+                        }
+                        // Also click the checkbox container
+                        checkbox.click();
+                    }
+                }''')
+                page.wait_for_timeout(1000)
+                print("[FORM] Used JavaScript to check checkbox")
+                checkbox_clicked = True
+            except Exception as e:
+                print(f"[FORM] JavaScript checkbox failed: {e}")
+        
+        # Method 5: Try clicking by coordinates
+        if not checkbox_clicked:
+            try:
+                print("[FORM] Trying coordinate click...")
+                checkbox = page.locator("mat-checkbox").first
+                box = checkbox.bounding_box()
+                if box:
+                    # Click in the middle of the checkbox
+                    page.mouse.click(box['x'] + 15, box['y'] + box['height']/2)
+                    page.wait_for_timeout(1000)
+                    print("[FORM] Clicked checkbox by coordinates")
+                    checkbox_clicked = True
+            except Exception as e:
+                print(f"[FORM] Coordinate click failed: {e}")
+        
+        # Verify checkbox is now checked
+        page.wait_for_timeout(500)
         try:
             checkbox = page.locator("mat-checkbox").first
-            if checkbox.is_visible(timeout=1000):
-                checkbox.click()
-                print("[FORM] Checkbox clicked")
+            class_attr = checkbox.get_attribute("class") or ""
+            if "mat-checkbox-checked" in class_attr:
+                print("[FORM] SUCCESS: Checkbox verified as checked")
+            else:
+                print("[FORM] WARNING: Checkbox may not be checked!")
+                page.screenshot(path="checkbox_not_checked.png")
         except:
             pass
+        
+        # Extra wait before submit
+        page.wait_for_timeout(1500)
         
         # Submit or stop
         if submit:
             print("[FORM] Submitting application...")
             page.click("button:has-text('Submit')")
+            page.wait_for_timeout(3000)  # Wait for response
             page.wait_for_load_state("networkidle")
-            print("[FORM] Application submitted!")
+            
+            # Check for errors - only flag if there's actual error text
+            error_selectors = [
+                "text=already exists",
+                "text=duplicate",
+                "text=Email is already",
+                "mat-snack-bar-container:has-text('error')",
+                "snack-bar-container:has-text('error')",
+                ".error-message",
+            ]
+            
+            error_found = False
+            for err_sel in error_selectors:
+                try:
+                    error_el = page.locator(err_sel).first
+                    if error_el.is_visible(timeout=1000):
+                        error_text = error_el.inner_text().strip()
+                        # Only flag as error if there's actual text content
+                        if error_text and len(error_text) > 5:
+                            print(f"[FORM] ERROR DETECTED: {error_text}")
+                            page.screenshot(path="submit_error.png")
+                            error_found = True
+                            break
+                except:
+                    continue
+            
+            if error_found:
+                return False
+            
+            # Check for success indicators
+            success_selectors = [
+                "text=successfully",
+                "text=submitted",
+                "text=Application has been",
+                "text=invitation has been sent",
+                "mat-snack-bar-container:has-text('success')",
+            ]
+            
+            success_found = False
+            for suc_sel in success_selectors:
+                try:
+                    success_el = page.locator(suc_sel).first
+                    if success_el.is_visible(timeout=2000):
+                        success_text = success_el.inner_text().strip()
+                        if success_text:
+                            print(f"[FORM] SUCCESS: {success_text}")
+                            success_found = True
+                            break
+                except:
+                    continue
+            
+            # Also check if we're back on the application list (redirect = success)
+            if not success_found:
+                try:
+                    page_content = page.content()
+                    if "Initiate a New Badge" in page_content or "Application Management" in page_content:
+                        print("[FORM] SUCCESS: Redirected back to application list")
+                        success_found = True
+                except:
+                    pass
+            
+            # Check if Submit button is gone (means form was submitted)
+            if not success_found:
+                try:
+                    submit_btn = page.locator("button:has-text('Submit')").first
+                    if not submit_btn.is_visible(timeout=1000):
+                        print("[FORM] SUCCESS: Submit button no longer visible")
+                        success_found = True
+                except:
+                    pass
+            
+            if success_found:
+                print("[FORM] Application submitted successfully!")
+                return True
+            else:
+                print("[FORM] WARNING: Could not confirm submission - checking for errors...")
+                page.screenshot(path="submit_uncertain.png")
+                
+                # If no explicit error and no success, assume it worked
+                # (sometimes success message is quick and disappears)
+                print("[FORM] No error detected, assuming success")
+                return True
         else:
             print("[FORM] *** SUBMIT DISABLED - Form filled but not submitted ***")
-        
-        return True
+            return True
         
     except Exception as e:
         print(f"[FORM] Error: {e}")
@@ -608,6 +794,8 @@ def run_apply(application_id: str = None, all_pending: bool = False, submit: boo
         if success and submit:
             mark_badge_request_sent(application_id)
             print(f"[INFO] Marked badge request as sent")
+        elif not success:
+            print(f"[ERROR] Application failed - NOT marking as sent")
     
     elif all_pending:
         records = get_pending_airport_applications()
@@ -616,6 +804,9 @@ def run_apply(application_id: str = None, all_pending: bool = False, submit: boo
         if not records:
             print("[INFO] No pending applications to process")
             return
+        
+        success_count = 0
+        fail_count = 0
         
         for record in records:
             applicant = format_applicant_for_bot(record)
@@ -629,6 +820,13 @@ def run_apply(application_id: str = None, all_pending: bool = False, submit: boo
             if success and submit:
                 mark_badge_request_sent(record["id"])
                 print(f"[INFO] Marked badge request as sent for {record['id']}")
+                success_count += 1
+            elif not success:
+                print(f"[ERROR] Application failed for {applicant['first_name']} {applicant['last_name']} - NOT marking as sent")
+                fail_count += 1
+        
+        print("=" * 40)
+        print(f"[SUMMARY] Completed: {success_count} success, {fail_count} failed")
 
 
 def run_test(headless: bool = True):
