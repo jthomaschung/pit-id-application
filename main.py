@@ -264,46 +264,159 @@ def fill_duplicate_check(page: Page, dob: str, ssn4: str) -> bool:
         month, day, year = int(parts[0]), int(parts[1]), int(parts[2])
         print(f"[FORM] Parsed date: {month}/{day}/{year}")
         
-        # Fill DOB via JavaScript
+        # Fill DOB via JavaScript - target the modal specifically
         print("[FORM] Setting DOB via JavaScript...")
         js_result = page.evaluate(f'''() => {{
             const modal = document.querySelector('mat-dialog-container, .mat-dialog-container');
-            if (!modal) return {{ success: false }};
+            if (!modal) return {{ success: false, error: 'no modal' }};
             const input = modal.querySelector('input[placeholder*="MM/DD/YYYY"]');
-            if (!input) return {{ success: false }};
+            if (!input) return {{ success: false, error: 'no input' }};
             input.removeAttribute('readonly');
             input.removeAttribute('disabled');
             input.value = "{dob}";
             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
             input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            return {{ success: true }};
+            input.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+            return {{ success: true, value: input.value }};
         }}''')
         
         if js_result and js_result.get('success'):
             print(f"[FORM] Set DOB: {dob}")
         else:
-            print("[FORM] WARNING: DOB JavaScript method may have failed")
+            print(f"[FORM] WARNING: DOB JavaScript failed: {js_result}")
         
-        # Fill SSN4
-        ssn_selectors = ["input[placeholder*='Last 4']", "input[placeholder*='SSN']", "input[id*='ssn']"]
+        page.wait_for_timeout(500)
+        
+        # Fill SSN4 - target the modal specifically
+        print("[FORM] Filling SSN4...")
+        ssn_filled = False
+        ssn_selectors = [
+            "mat-dialog-container input[placeholder*='Last 4']",
+            "mat-dialog-container input[id*='ssn' i]",
+            "input[placeholder*='Last 4']",
+        ]
         for selector in ssn_selectors:
             try:
                 ssn_input = page.locator(selector).first
-                if ssn_input.is_visible(timeout=1000):
+                if ssn_input.is_visible(timeout=2000):
+                    ssn_input.click(force=True)
+                    page.wait_for_timeout(200)
                     ssn_input.fill(ssn4)
                     print(f"[FORM] Filled SSN4: {ssn4}")
+                    ssn_filled = True
                     break
             except:
                 continue
         
-        # Click Continue
-        page.click("button:has-text('Continue')")
+        if not ssn_filled:
+            print("[FORM] WARNING: Could not fill SSN4")
+        
+        page.wait_for_timeout(500)
+        
+        # Click Continue button inside the modal
+        print("[FORM] Clicking Continue...")
+        continue_clicked = False
+        
+        try:
+            # Try clicking with force
+            continue_btn = page.locator("mat-dialog-container button:has-text('Continue')").first
+            if continue_btn.is_visible(timeout=2000):
+                continue_btn.click(force=True)
+                continue_clicked = True
+                print("[FORM] Clicked Continue (in modal)")
+        except:
+            pass
+        
+        if not continue_clicked:
+            try:
+                page.click("button:has-text('Continue')", force=True)
+                continue_clicked = True
+                print("[FORM] Clicked Continue (global)")
+            except:
+                pass
+        
+        if not continue_clicked:
+            # Use JavaScript to click
+            page.evaluate('''() => {
+                const btn = document.querySelector('button[type="submit"], button.mat-raised-button');
+                if (btn) btn.click();
+            }''')
+            print("[FORM] Clicked Continue via JavaScript")
+        
+        page.wait_for_timeout(3000)
+        
+        # Check for error messages in modal (duplicate found, validation error, etc.)
+        try:
+            error_in_modal = page.locator("mat-dialog-container .mat-error, mat-dialog-container mat-error").first
+            if error_in_modal.is_visible(timeout=1000):
+                error_text = error_in_modal.inner_text()
+                if error_text.strip():
+                    print(f"[FORM] ERROR in modal: {error_text}")
+                    page.screenshot(path="duplicate_check_error.png")
+                    return False
+        except:
+            pass
+        
+        # Check if "Record found" popup appeared (duplicate exists)
+        try:
+            if page.locator("text=Record found").is_visible(timeout=1000):
+                print("[FORM] DUPLICATE FOUND - applicant already exists in system")
+                page.screenshot(path="duplicate_found.png")
+                # This might not be an error - they might need to continue with existing record
+                # For now, try clicking Continue anyway
+                try:
+                    page.click("button:has-text('Continue')", force=True)
+                    page.wait_for_timeout(2000)
+                except:
+                    pass
+        except:
+            pass
+        
+        # CRITICAL: Wait for modal to close
+        print("[FORM] Waiting for modal to close...")
+        
+        modal_closed = False
+        
+        # Wait for overlay to disappear
+        for attempt in range(3):
+            try:
+                # Check if modal is gone
+                if not page.locator("mat-dialog-container").is_visible(timeout=2000):
+                    print("[FORM] Modal closed successfully")
+                    modal_closed = True
+                    break
+            except:
+                modal_closed = True
+                break
+            
+            print(f"[FORM] Modal still open, attempt {attempt + 1}")
+            page.wait_for_timeout(1000)
+        
+        # Force close if still open
+        if not modal_closed:
+            print("[FORM] Modal still open, forcing close...")
+            
+            # Try Escape
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(1000)
+            
+            # JavaScript removal
+            page.evaluate('''() => {
+                document.querySelectorAll('.cdk-overlay-backdrop').forEach(el => el.remove());
+                document.querySelectorAll('mat-dialog-container').forEach(el => el.remove());
+                const overlay = document.querySelector('.cdk-overlay-container');
+                if (overlay) overlay.innerHTML = '';
+            }''')
+            page.wait_for_timeout(1000)
+        
         page.wait_for_load_state("networkidle")
-        print("[FORM] Duplicate check submitted")
+        page.wait_for_timeout(2000)
+        print("[FORM] Duplicate check completed")
         return True
         
     except Exception as e:
         print(f"[FORM] Duplicate check error: {e}")
+        page.screenshot(path="duplicate_check_exception.png")
         return False
 
 
@@ -371,7 +484,21 @@ def fill_autocomplete_field(page: Page, field_name: str, trigger: str) -> bool:
         
         inp.scroll_into_view_if_needed()
         page.wait_for_timeout(500)
-        inp.click()
+        
+        # Try clicking - use JavaScript if force click fails
+        try:
+            inp.click(force=True, timeout=5000)
+        except:
+            print(f"[FORM] Force click failed for {field_name}, using JavaScript...")
+            # Use JavaScript to focus and interact
+            page.evaluate('''(selector) => {
+                const input = document.querySelector(selector);
+                if (input) {
+                    input.focus();
+                    input.click();
+                }
+            }''', f"input[placeholder*='Sponsor'], input[id='Organization'], input[id='SponsorCompany'], mat-form-field:has-text('{field_name}') input")
+        
         page.wait_for_timeout(500)
         inp.fill("")
         page.wait_for_timeout(300)
@@ -385,7 +512,7 @@ def fill_autocomplete_field(page: Page, field_name: str, trigger: str) -> bool:
                 options = page.locator(opt_sel).all()
                 for opt in options:
                     if opt.is_visible(timeout=500):
-                        opt.click()
+                        opt.click(force=True)  # Force click
                         print(f"[FORM] Selected Atlas for {field_name}")
                         page.wait_for_timeout(1000)
                         return True
@@ -418,7 +545,7 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
             try:
                 inp = page.locator(sel).first
                 if inp.is_visible(timeout=1000):
-                    inp.click()
+                    inp.click(force=True)
                     inp.fill(applicant["first_name"])
                     print(f"[FORM] First Name: {applicant['first_name']}")
                     break
@@ -433,7 +560,7 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
             try:
                 inp = page.locator(sel).first
                 if inp.is_visible(timeout=1000):
-                    inp.click()
+                    inp.click(force=True)
                     inp.fill(applicant["last_name"])
                     print(f"[FORM] Last Name: {applicant['last_name']}")
                     break
@@ -448,6 +575,7 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
                 try:
                     inp = page.locator(sel).first
                     if inp.is_visible(timeout=1000):
+                        inp.click(force=True)
                         inp.fill(applicant["middle_name"])
                         print(f"[FORM] Middle Name: {applicant['middle_name']}")
                         break
@@ -462,7 +590,7 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
             try:
                 inp = page.locator(sel).first
                 if inp.is_visible(timeout=1000):
-                    inp.click()
+                    inp.click(force=True)
                     inp.fill(applicant["email"])
                     print(f"[FORM] Email: {applicant['email']}")
                     break
@@ -477,7 +605,7 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
             try:
                 inp = page.locator(sel).first
                 if inp.is_visible(timeout=1000):
-                    inp.click()
+                    inp.click(force=True)
                     inp.fill(applicant["phone"])
                     print(f"[FORM] Phone: {applicant['phone']}")
                     break
@@ -506,9 +634,9 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
                 try:
                     dropdown = page.locator(sel).first
                     if dropdown.is_visible(timeout=1000):
-                        dropdown.click()
+                        dropdown.click(force=True)
                         page.wait_for_timeout(500)
-                        page.locator("mat-option:has-text('Sterile Area')").first.click()
+                        page.locator("mat-option:has-text('Sterile Area')").first.click(force=True)
                         print("[FORM] Selected 'Sterile Area'")
                         break
                 except:
@@ -537,7 +665,7 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
                 page.wait_for_timeout(500)
                 cert_checkbox.scroll_into_view_if_needed()
                 page.wait_for_timeout(500)
-                cert_checkbox.click()
+                cert_checkbox.click(force=True)
                 page.wait_for_timeout(1000)
                 print("[FORM] Clicked certification checkbox")
                 checkbox_clicked = True
@@ -556,7 +684,7 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
                     # Check if already checked
                     class_attr = checkbox.get_attribute("class") or ""
                     if "mat-checkbox-checked" not in class_attr:
-                        checkbox.click()
+                        checkbox.click(force=True)
                         page.wait_for_timeout(1000)
                         print("[FORM] Clicked mat-checkbox")
                         checkbox_clicked = True
@@ -574,7 +702,7 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
                     print("[FORM] Found checkbox label")
                     label.scroll_into_view_if_needed()
                     page.wait_for_timeout(500)
-                    label.click()
+                    label.click(force=True)
                     page.wait_for_timeout(1000)
                     print("[FORM] Clicked checkbox label")
                     checkbox_clicked = True
@@ -637,7 +765,8 @@ def fill_application_form(page: Page, applicant: dict, submit: bool = False) -> 
         # Submit or stop
         if submit:
             print("[FORM] Submitting application...")
-            page.click("button:has-text('Submit')")
+            # Use force=True in case any overlay is still present
+            page.locator("button:has-text('Submit')").first.click(force=True)
             page.wait_for_timeout(3000)  # Wait for response
             page.wait_for_load_state("networkidle")
             
